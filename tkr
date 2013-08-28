@@ -1,0 +1,154 @@
+#!/bin/bash
+
+#Date:    $TESTDATE$
+#Version: $TESTVER$
+#Author:  $TESTAUTHOR$ 
+#ID:      $TESTID$
+#
+#Created by J. Herrington on 11/3/11
+#Purpose: a wrapper around tkregister2, tailored for FSL registration output.
+#   tkregister2 is a freesurfer GUI that allows for the visual inspection and
+#   modification of affine registrations.  The purpose of this wrapper is to
+#   make it easier to use this program with FSL registrations (i.e., the content
+#   of the reg/ folder output by FEAT).  Also, this script makes backups of
+#   FSL registration inputs to tkregister2, ***as the program overwrites the
+#   original input***.  Input registrations are saved to <input>_TKRBAK# before
+#   launching tkregister2, where # starts with 001 and is incremented if that
+#   file already exists in the present working directory.
+#
+#Usage: tkr <args>
+#   ...where mandatory args include:
+#
+#       -x <xfm>: the transformation matrix.  If used without the
+#            -mov and -targ arguments, this script will try
+#            to figure out what the right files will be.  For example,
+#            if you type "-x example_func2standard.mat" and do not
+#            include -mov and -targ, the script will default to
+#            looking for example_func2standard.nii.gz (moving image) and
+#            standard.nii.gz (target image) in the same directory as
+#            example_func2standard.mat.
+#
+#   ...and optional args include:
+#       -mov <image_file>: the image being registered to the target
+#       -o <output_name>: name of output file with new transformation
+#            matrix.  The default is to overwrite the input (the 
+#            script always makes a backup of the input file with the
+#            same name as the input but with _TKRBAK appended).
+#       -s: dry run/simulation mode (just prints commands to screen)
+#       -targ <image_file>: the target of the registration
+#       -v: set verbosity level (default=0=quiet).  At present >=1 is max
+#            verbosity.
+#
+#Examples:
+#     Say you want to fix a bad registration of epi to standard that
+#     was created by Feat.  Say the registration output was saved to
+#     /home/dude/myfeat.feat/reg.  You'd type:
+#
+#     tkr -xfm /home/dude/myfeat.feat/reg/example_func2standard.mat
+#
+#Dependencies:
+#1) tkregister2 (part of freesurfer)
+#
+########################### END HEADER ##############################
+#Copyright (c) John Herrington, University of Pennsylvania
+#    
+#This software is distributed WITHOUT ANY WARRANTY; without even
+#the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+#PURPOSE.  See the above copyright notices for more information.
+
+#Initalize variables
+vbse=1
+smode='eval'
+myPWD=${PWD}
+tkOptions=""
+tkrCtr=1
+
+#Define functions
+usage() {
+
+        #Get line number representing end of header
+        myfile=`which $0`
+
+        #Get last line of header
+        myline=`grep -m 1 -n "END HEADER" ${myfile}|sed 's/\:.*//g'`
+        let myline-=1
+        let mytail=myline-2
+
+        #Print everything down to header line
+        head -n ${myline} ${myfile}|sed 's/^\#//g'|tail -n ${mytail}
+	exit 0
+
+}
+
+##If no inputs, print usage info
+if [ $# -lt 2 ]; then
+    usage
+    exit 0
+fi
+
+#Process command line arguments
+until [ -z "$1" ]; do
+case "$1" in
+
+        -m | -mov    )
+	        mov=${2}
+		;;
+        -o | -out    )
+	        out=${2}
+		;;
+        -s | simulate    )
+	        smode="echo"
+		;;
+        -t | -targ | -target    )
+	        targ=${2}
+		;;
+        -x | -xfm | -mat    )
+	        xfm=${2}
+		;;
+        -vbse | -v    )
+	        vbse=${2}
+		;;
+esac
+shift
+done
+
+#Intialize more variables
+xfmDir=`dirname ${xfm}`
+xfmFile=`basename ${xfm}`
+if [ "x${out}" == "x" ]; then out=${xfm}; fi
+outFS=${xfm/.mat}_tkr.mat
+tkrBak=${xfm}_TKRBAK`zeropad ${tkrCtr} 3`
+while [ -f ${tkrBak} ]; do
+    let tkrCtr+=1
+    tkrBak=${xfm}_TKRBAK`zeropad ${tkrCtr} 3`
+done
+
+#If no images input, try to intelligently, figure out what was intended
+if [ "x${targ}" == "x" -o "x${mov}" == "x" ]; then
+    mov="${xfmDir}/${xfmFile/2*}.nii.gz"
+    targ="${xfmDir}/`echo ${xfmFile/*2}|sed 's/mat/nii\.gz/g'`"
+fi
+
+#Now make sure all files exist
+for i in ${xfm} ${targ} ${mov}; do
+    if [ ! -f ${i} -o "x${i}" == "x" ]; then
+	echo "*** tkr ERROR: missing needed file ${i}"
+	exit 0
+    fi
+done
+
+#Make backup of xfm before editing
+mycmd="rsync -rut ${xfm} ${tkrBak}"
+$smode $mycmd
+
+#Update user
+if [ ${vbse} -gt 0 ]; then
+    echo "*** tkr Affine matrix file: ${xfm}"
+    echo "*** tkr Moving Image ${mov}"
+    echo "*** tkr Target Image ${targ}"
+fi
+
+#Construct and execute command
+mycmd="tkregister2 --mov ${mov} --targ ${targ} --reg ${outFS} --fslreg ${xfm} --
+fslregout ${out} --title ${xfm} ${tkOptions}"
+$smode $mycmd
