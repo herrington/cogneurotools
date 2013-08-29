@@ -1,9 +1,8 @@
 #!/bin/bash
 
-#Date:    $TESTDATE$
-#Version: $TESTVER$
-#Author:  $TESTAUTHOR$ 
-#ID:      $TESTID$
+#$Date$
+#$Author: John Herrington$ 
+#$Id$#
 #
 #Created by J. Herrington on 11/3/11
 #Purpose: a wrapper around tkregister2, tailored for FSL registration output.

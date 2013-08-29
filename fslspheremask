@@ -1,0 +1,171 @@
+#!/bin/bash
+
+#$Date$
+#$Author: John Herrington$ 
+#$Id$#
+#
+#fslspheremask
+#Created by JH on 2/29/08
+#Purpose: to create spherical ROI masks using FSL tools
+#
+#Usage: fslspheremask <arguments>
+#	where mandatory arguments include:
+#       -m: Input coordinates are in matrix space, not MNI
+#           space.  This allows for a non-MNI template to
+#           be used (see -t flag below).  Default is false.
+#
+#       -s <x,y,z,r>: X,Y and Z coordinates for sphere (MNI),
+#           followed by the sphere radius (in mm),
+#           packed together in a single comma-delimited string.
+#           This argument can be used multiple times to create
+#           multiple spheres within the same mask (all will be set to 1). 
+#
+#       -simulate: Dry run/simulation mode.  Prints commands to screen.
+#
+#       -t <template_name>: use specific template image for
+#           defining the space (rather than MNI).  When using
+#           this option, input coordinates are automatically
+#           set to matrix space, not MNI (as if the -m argument
+#           above had been used).
+#
+#	... and optional argument include:
+#	-o: Output file name.  Default is 
+#           "fslspheremask_mniX_Y_Z_r#.nii.gz, where X, Y and
+#           Z are the coordinates, and # is the radius (in mm).
+#
+#Dependencies:
+#	1) FSL: must be installed, in default path, and have $FSLDIR set
+#
+#Optional dependency (script will ignore if not in path):
+#	1) nifti_tool, from AFNI
+#
+################## END HEADER #################
+#Copyright (c) John Herrington, University of Pennsylvania
+#    
+#This software is distributed WITHOUT ANY WARRANTY; without even
+#the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+#PURPOSE.  See the above copyright notices for more information.
+#Check for sufficient inputs.  If insufficient, print comments above
+
+if [ ${#} -lt 1 ]; then
+	cat ${0} | while read i; do
+		if  [ `echo ${i}|grep -c "END HEADER"` -gt 0 ]; then
+			break
+		else
+			echo $i|sed 's/^\#//g'
+		fi
+	done 
+	exit 0
+fi
+
+#Initalize variables
+smode='eval'        #Set to echo for printing lines, eval for running program
+inMatrixSpace="F"
+myTemplate=${FSLDIR}/data/standard/MNI152_T1_2mm_brain.nii.gz #Input image
+outfilename="fslspheremask_out.nii.gz"
+voxsize=2           #Size of voxels in mm for input and output
+tmpimg="/tmp/fslspheremask_$$" #Default name for temporary/intermediate image
+scale=0             #Decimal places for bc commands below
+
+#Process command line arguments
+until [ -z "$1" ]; do
+case "$1" in
+    -m )
+	inMatrixSpace="T"
+	;;
+    -s | -sphere	)
+	in="${in} ${2}"
+	let nin+=1
+	;;
+    -simulate		)
+        smode=echo
+	;;
+    -t | -template )
+        myTemplate=${2}
+	inMatrixSpace="T"
+	;;
+    -o | -out	)
+        outfilename=${2%.nii.gz}.nii.gz
+	;;
+esac
+shift
+done
+
+#Check for needed files
+for j in ${myTemplate}; do
+    if [ "x${j}" == "x" ] || [ ! -f ${j} ]; then
+	echo "*** fslspheremask ERROR: cannot find needed file ${j}"
+	exit 0
+    fi
+done
+
+#Create empty output image
+myfcmd="fslmaths ${myTemplate} -mul 0 ${outfilename}"
+$smode $myfcmd
+
+#Get voxel size
+voxsizeX=`fslval ${myTemplate} pixdim1|tr -d [:cntrl:]|sed 's/\..*//g'`
+voxsizeY=`fslval ${myTemplate} pixdim2|tr -d [:cntrl:]|sed 's/\..*//g'`
+voxsizeZ=`fslval ${myTemplate} pixdim3|tr -d [:cntrl:]|sed 's/\..*//g'`
+
+#Get origin
+if [ ${voxsizeX} == 2 ]; then
+    mniorigin=(45 63 36)    #MNI origin in matrix space (origin is posterior,
+                            #inferior, right corner)
+    myshift=(-1 -1 -1)  #Shift factor to apply to matrix coordinates
+elif [ ${voxsizeX} == 1 ]; then
+    mniorigin=(90 126 72)    #MNI origin in matrix space (origin is posterior,
+                            #inferior, right corner)
+    myshift=(0 0 0)  #Shift factor to apply to matrix coordinates
+fi
+
+#Loop over all inputs
+ctr=1; for i in ${in}; do
+
+    myTmp=${tmpimg}_`zeropad ${ctr} 3`
+    myS=(`echo ${i}|awk -F ',' '{print $1,$2,$3,$4}'`)
+
+    #Convert input MNI coordinates to matrix space, if needed
+    if [ ${inMatrixSpace} == "F" ]; then
+	mycoordsmatrix[0]=`echo "scale=${scale}; \
+	    ${mniorigin[0]}-(${myS[0]}/${voxsizeX})+myshift[0]" | bc`
+	mycoordsmatrix[1]=`echo "scale=${scale}; \
+	    ${mniorigin[1]}+(${myS[1]}/${voxsizeY})+myshift[0]" | bc`
+	mycoordsmatrix[2]=`echo "scale=${scale}; \
+	    ${mniorigin[2]}+(${myS[2]}/${voxsizeZ})+myshift[0]" | bc`
+
+    else
+	mycoordsmatrix=(`echo ${i}|awk -F ',' '{print $1,$2,$3}'`)
+    fi
+
+    #First, create single point
+    myfmcmd="fslmaths ${outfilename} -add 1 -roi ${mycoordsmatrix[0]} 1 \
+	${mycoordsmatrix[1]} 1 ${mycoordsmatrix[2]} 1 0 1 ${outfilename} -odt float"
+    $smode $myfmcmd
+
+    #Second apply spherical filter to point
+    myfmcmd="fslmaths ${outfilename} -kernel sphere ${myS[3]} -fmean
+     ${outfilename}"
+    $smode $myfmcmd
+
+    #Third, generate numeric code for sphere
+    myfcmd="fslmaths ${outfilename} -thr .00000001 -bin ${outfilename}; fslmaths
+     ${outfilename} -mul ${ctr} ${outfilename}"
+    $smode $myfcmd
+
+    #Increment counter
+    let ctr+=1
+done
+
+#If possible, add coordinate info to header
+if [ ! "x`which nifti_tool`" == "x" ]; then
+    hdrmodcmd="gunzip ${outfilename}; nifti_tool -overwrite -mod_hdr -mod_field 
+    intent_code 1002 -mod_field descrip \"${in}\" -infiles ${outfilename/.gz};
+     gzip ${outfilename/.gz}"
+    $smode $hdrmodcmd
+fi
+
+# Clean up temporary files
+find `dirname ${tmpimg}`/ -name "`basename ${tmpimg}`*" 2>/dev/null|while read i; do
+    $smode rm -rf ${i}
+done
