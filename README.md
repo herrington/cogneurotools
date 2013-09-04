@@ -1,8 +1,5 @@
 cogneurotools
 =============
-
-#$Date$
-#$Author: John Herrington$ 
 #$Id$#
 
 This repository contains a variety of scripts that automate the use of 
