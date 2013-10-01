@@ -1,6 +1,10 @@
 #!/bin/bash
 
-#$Id: TEST $#
+<<<<<<< HEAD
+#$Id$#
+=======
+#$Id$#
+>>>>>>> 454bd562aa13c1fc57b20812694e57b9bacbb17e
 #
 #fslspheremask
 #Created by JH on 2/29/08

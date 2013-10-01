@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 
-#$Id: TEST $#
+<<<<<<< HEAD
+#$Id$#
+=======
+#$Id$#
+>>>>>>> 454bd562aa13c1fc57b20812694e57b9bacbb17e
 #
 #mricorr
 #Created by J. Herrington on 7/15/13
