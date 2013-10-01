@@ -1,9 +1,7 @@
 #!/usr/bin/env python
 
 """
-$Date$
-$Author: John Herrington$ 
-$Id$
+$Id: TEST $
 
 imkappa
 Created by J. Herrington on 8/26/13
@@ -94,21 +92,20 @@ def myExec(cmdArray,vb=0,sim=False,quiet=False,noFail=False):
         ret = (0,"Simulated","Simulated")
     else:
         output = ["",""]
-
-    try: #Now execute the command
-        p = subprocess.Popen(cmdArray[0].split(" "), stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE)
-        output = p.communicate()
-        status = p.returncode
-        ret = (status,output[0],output[1])
-    except OSError,e:
-        msg = cmd + "\t*** Caused an OSError\n"
-        msg = msg + "\t"+e.message
-        sys.stderr.write(msg)
-        raise e
-    except Exception,e:
-        sys.stderr.write(e.message)
-        raise e
+        try: #Now execute the command
+            p = subprocess.Popen(cmdArray[0].split(" "), stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+            output = p.communicate()
+            status = p.returncode
+            ret = (status,output[0],output[1])
+        except OSError,e:
+            msg = cmd + "\t*** Caused an OSError\n"
+            msg = msg + "\t"+e.message
+            sys.stderr.write(msg)
+            raise e
+        except Exception,e:
+            sys.stderr.write(e.message)
+            raise e
       
     if vb > 0 or sim: #Print return value if requested
       print "return Value: %d" % ret[0]
@@ -174,7 +171,7 @@ def kappa(imA,imB,vb=0,tmpIm='/tmp/imkappa_main_'+str(os.getpid()),sim=False):
     return kappa
 
 #Delete temporary files
-def clean(myStr,sim=True):
+def clean(myStr,sim=False):
     """Deletes all files beginning with myStr - dangerous!"""
     
     for i in glob.glob(myStr+"*"): #Do deleting
@@ -226,19 +223,19 @@ class mask:
         if os.path.exists(self.im) == False:
             raise myException("*** imkappa ERROR: Cannot open "+self.im)    
 
-    def preproc(self,thresh=0,vb=0): #Do any preprocessing
+    def preproc(self,thresh=0,vb=0,sim=False): #Do any preprocessing
         
         #Dupe image for processing
         self.dupeCmd="/usr/local/fsl-5.0.1/bin/imcp %s %s" % \
             (self.im,self.tmpIm)
-        myExec([self.dupeCmd],vb=vb)
+        myExec([self.dupeCmd],vb,sim)
 
         #Threshold image as needed
         if thresh > 0:
 
             self.threshCmd="fslmaths %s -thr %d -bin %s" % \
                 (self.tmpIm,thresh,self.tmpIm)
-            myExec([self.threshCmd],vb)
+            myExec([self.threshCmd],vb,sim)
  
 ################################################################################
 ##################################### MAIN #####################################
@@ -274,6 +271,7 @@ def main():
     inIms=options.inIms
     inThresh=int(options.inThresh)
     inVb=options.inVb
+    sim_tf=options.sim_tf
 
     if options.help_tf: #print long help and exit, if requestion
         print_header()
@@ -291,7 +289,7 @@ def main():
         ims[i].check_input()
 
         #Preprocess image as needed
-        ims[i].preproc(inThresh,inVb,sim)
+        ims[i].preproc(inThresh,inVb,sim_tf)
 
     #Get a list of all possible permutations of input images
     perms=list(itertools.combinations(range(len(ims)),2))

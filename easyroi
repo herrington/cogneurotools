@@ -1,0 +1,596 @@
+#!/usr/bin/env python
+
+"""
+$Id: TEST $
+
+easyroi
+Created by J. Herrington on 9/16/13
+Purpose: To automate a number of functions related to the generation of MRI 
+    region of interest (ROI) statistics.
+
+Usage: easyroi <args>
+... where mandatory arguments include
+    -i <input_image>: Input image.  The image to derive ROI statistics from
+    (usually a stat map).
+
+... and optional arguments include ??THIS IS INCOMPLETE:
+    -a <input_image>: input anatomical image (usually a T1).
+    -m <input_image>: input mask image.
+    -s: dry run/simulation - prints shell commands to screen.
+    -t <integer>: apply intensity threshold <integer> to input image and
+        binary-ize the result (i.e., turn input into mask).
+    -v <integer>: set verbosity level.  Default = 0 = quiet.  At present,
+        >=1 is max verbosity.
+
+Dependencies:
+1) FSL must be installed and in path.
+2) AFNI must be installed and in path.
+
+############################### END HEADER ###################################
+Copyright (c) John Herrington, University of Pennsylvania
+    
+This software is distributed WITHOUT ANY WARRANTY; without even
+the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE.  See the above copyright notices for more information.
+
+"""
+################################################################################
+############################### IMPORT MODULES #################################
+################################################################################
+
+import sys,os,math,optparse,random,glob,subprocess,itertools,commands,shutil
+from string import *
+    
+################################################################################
+############################# DEFINE FUNCTIONS #################################
+################################################################################
+
+def print_header():
+    """Function for printing the header portion of the script to the screen"""
+
+    #Initialize variables
+    lineCtr=0
+
+    #Read in text file
+    if os.path.exists(sys.argv[0]):
+        myFID = open(sys.argv[0], 'r')
+        for myline in myFID:
+            toprint=myline.replace('#',"",1)
+            endline='END HEADER' in toprint
+            if endline==False:
+                if lineCtr > 2:    print toprint.rstrip("\n")
+            else:
+                myFID.close()
+                break
+            lineCtr=lineCtr+1
+    return 0
+
+#Function for executing shell commands
+def myExec(cmdArray,vb=0,sim=False,quiet=False,noFail=False):
+    """executes a command array by space-concatenating it and passing it to
+    subprocess.Popen. Returns a tuple containing (return value, stdout, stderr)
+    if the exit status is not 0, raises an exception
+      cmdArray - the input command array
+      vb       - turn on extra output
+      sim      - simulate the run (no actual commands run)
+      quiet    - turns off output of stdout and stderr to the screen
+      noFail   - if true does not raise an exception if return value is not 0
+    """
+    MAX_CMD_ARR_LEN = 25 # max number of items to dump
+    
+    if len(cmdArray) > MAX_CMD_ARR_LEN and vb<2:
+        cmd = " ".join(cmdArray[:MAX_CMD_ARR_LEN]) + " ...[" + \
+            str(len(cmdArray)) + "]"
+    else:
+        cmd = " ".join(cmdArray)
+
+    if vb > 0 or sim: # print to screen as needed
+        print cmd
+
+    if sim: #return null values if in simulation mode
+        ret = (0,"Simulated","Simulated")
+    else:
+        output = ["",""]
+        try: #Now execute the command
+            p = subprocess.Popen(cmdArray[0].split(" "), stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+            output = p.communicate()
+            status = p.returncode
+            ret = (status,output[0],output[1])
+        except OSError,e:
+            msg = cmd + "\t*** Caused an OSError\n"
+            msg = msg + "\t"+e.message
+            sys.stderr.write(msg)
+            raise e
+        except Exception,e:
+            sys.stderr.write(e.message)
+            raise e
+      
+    if vb > 0 or sim: #Print return value if requested
+      print "return Value: %d" % ret[0]
+
+    if not quiet and not sim and vb > 0: #pass stderr and stdout along.
+      sys.stdout.write(output[0])
+      sys.stderr.write(output[1])
+    
+    if ret[0] != 0 and not noFail: #if failure then throw an exception
+      msg = cmd + " Failed!"
+      raise myException(msg)
+    
+    return ret
+
+def checkDeps(executable): #function for checking dependencies
+    """checks whether the system can find needed executables"""
+  
+    #print ["which",executable] 
+    if myExec(["which "+executable],quiet=True,noFail=True)[0] != 0:
+      msg = "*** easyroi ERROR: Cannot find dependency " + executable + \
+        ".  Make sure it is installed an in path."
+      raise myException(msg)
+
+#Delete temporary files
+def sphereMask(coords,num=1,template=False,vb=0,sim_tf=True):
+    """Creates a spherical mask via fslmaths commands
+      coords   - coordinates in matrix space
+      num      - integer to code the sphere
+      template - reference image to use for sphere space
+      vb       - turn on extra output
+      sim_tf   - run in simulation mode
+    """
+
+    #Initialize variables    
+    sphere="/tmp/easyroi_%d_%06d_sphere" %(os.getpid(),random.randint(0,10000))
+    coords=coords.split(',')
+    if template == False:
+        template=os.path.join(os.getenv('FSLDIR'),'data','standard',
+            'MNI152_T1_2mm_brain.nii.gz')
+
+    #Make sure template exists
+    if os.path.exists(template) == False:
+        raise myException("Error making sphereMask: no legit template")
+
+    #Create empty output image
+    mycmd1="fslmaths %s -mul 0 %s" % (template,sphere)
+    myExec([mycmd1],vb,sim_tf)
+
+    #First, create single point
+    mycmd2="fslmaths %s -add 1 -roi %s 1 %s 1 %s 1 0 1 %s -odt float" % \
+        (sphere,coords[0],coords[1],coords[2],sphere)
+    myExec([mycmd2],vb,sim_tf)
+
+    #Second apply spherical filter to point
+    mycmd3="fslmaths %s -kernel sphere %s -fmean %s" %(sphere,coords[3],sphere)
+    myExec([mycmd3],vb,sim_tf)
+
+    #Third, generate numeric code for sphere
+    mycmd4="fslmaths %s -thr .00000001 -bin %s" % (sphere,sphere)
+    myExec([mycmd4],vb,sim_tf)
+
+    #Last, give ROI specified number
+    mycmd5="fslmaths %s -mul %d %s" % (sphere,num,sphere)
+    myExec([mycmd5],vb,sim_tf)
+
+    #Return name of new sphere
+    return sphere
+
+#Extract ROI data
+def roi_extract(im,mask,vb=0,sim_tf=False):
+
+    """Extract ROI information
+      im       - image to get ROI information from
+      mask     - mask image defining ROI sapce
+      vb       - turn on extra output
+      sim_tf   - run in simulation mode
+    """
+
+    #Initialize outputs
+    roiMean=["NA"]
+    roiMin=["NA"]
+    roiMax=["NA"]
+    roiCOG=["NA"]
+    roiSize=["NA"]
+    roiOut=[]
+
+    print im.dims[0:2]
+    print mask.dims[0:2]
+
+    #Do any needed registration
+    if im.dims[0:2] != mask.dims[0:2]:
+        mask.reg(im.currIm,"ident","nearestneighbour")
+
+    #More initialization
+    roiStatBase="fslstats %s -k %s" % (im.currIm,mask.currIm)
+
+    #Make sure files exists
+    if sim_tf == False:
+
+        #Get all needed stats
+        roiMeanCmd="%s -M" % roiStatBase
+        roiMean=[myExec([roiMeanCmd],vb,sim_tf)[1].strip()]
+        roiMinMaxCmd="%s -R" % roiStatBase
+        roiMinMax=myExec([roiMinMaxCmd],vb,sim_tf)[1].strip()
+        (roiMin[0],roiMax[0])=roiMinMax.split()
+        roiCOGCmd="%s -c" % roiStatBase
+        roiCOG=myExec([roiCOGCmd],vb,sim_tf)[1].strip()
+        roiCOG=roiCOG.split()
+        roiSizeCmd="%s -V" % roiStatBase
+        roiSize=myExec([roiSizeCmd],vb,sim_tf)[1].strip()
+        roiSize=roiSize.split()
+
+    #Package stats for output
+    for i in roiMean,roiMin,roiMax,roiCOG,roiSize:
+        roiOut.extend(i)
+
+    return roiOut
+
+def first(anat,structs=False,params="-m fast",vb=0,sim_tf=False):
+
+    """Run FIRST on image
+      anat     - input structural MRI      
+      structs  - input structures (see FIRST syntax - default=all)
+      params   - additional parameters to send to command
+      vb       - turn on extra output
+      sim_tf   - run in simulation mode
+    """
+    
+    #Initialize variables
+    tmpIm="/tmp/easyroi_%d_%06d" %(os.getpid(),random.randint(0,10000))
+        
+    #Run FIRST
+    firstBase=tmpIm+"_first"
+    firstCmd="run_first_all %s -i %s -o %s" % (params,anat,firstBase)
+    if structs != False:
+        firstCmd=firstCmd+" -s "+structs
+    firstCmdOut=myExec([firstCmd],vb,sim_tf)[1].strip()
+    firstCmdHold="qsub -q all.q -l h_vmem=8g -N halt -hold_jid "+firstCmdOut+" -sync y -terse -o /dev/null -j y -V -cwd -b y echo halt > /dev/null"
+    firstCmdHoldOut=myExec([firstCmdHold],vb,sim_tf)[1].strip()
+
+    #Return masks
+    return firstBase+"_all_fast_firstseg.nii.gz"
+
+def first_amygdala(firstseg,vb=0,sim_tf=False):
+
+    """Extract amygdala from image
+      firstseg - input *firstseg.nii.gz (from FIRST output)
+      vb       - turn on extra output
+      sim_tf   - run in simulation mode
+    """
+
+    #Initialize variables
+    tmpImLamy="/tmp/easyroi_%d_%07d_la.nii.gz"%(os.getpid(),random.randint(0,10000))
+    tmpImRamy="/tmp/easyroi_%d_%07d_ra.nii.gz"%(os.getpid(),random.randint(0,10000))
+
+    #Isolate left amygdala
+    lamyCmd="fslmaths %s -thr 17.9 -uthr 18.1 -bin %s" % (firstseg,tmpImLamy)
+    lamyCmdOut=myExec([lamyCmd],vb,sim_tf)[1].strip()
+
+    #Isolate right amygdala
+    ramyCmd="fslmaths %s -thr 53.9 -uthr 54.1 -bin %s" % (firstseg,tmpImRamy)
+    ramyCmdOut=myExec([ramyCmd],vb,sim_tf)[1].strip()
+
+    #Return values
+    return tmpImLamy,tmpImRamy
+    
+def print_roi_results(ims,delim='\t',vb=0,sim_tf=False):
+
+    """Print ROI results
+      ims      - list of im objects containing ROI info 
+      vb       - turn on extra output
+      sim_tf   - run in simulation mode
+    """
+
+    #Print header
+    print "label\tmean\tmin\tmax\tcog_x\tcog_y\tcog_z\tsize_vox\tsize_vol"
+    for i in ims:
+        print '\n'.join(map(delim.join,i.roiData))
+
+#Delete temporary files
+def clean(myStr,sim_tf=False):
+
+    """Deletes all files beginning with myStr"""
+    
+    for i in glob.glob(myStr+"*"): #Do deleting
+        if sim_tf == False:
+            if os.path.isdir(i):
+                try:    shutil.rmtree(i)
+                except:    continue
+            else:
+                try:    os.remove(i)
+                except:    continue
+        else:
+            print "rm "+i
+
+################################################################################
+############################### DEFINE CLASSES #################################
+################################################################################
+
+# Error handler
+class myException(Exception):
+
+    """ Custom error handling class"""
+
+    def __init__(self, inMsg):
+      self.message = inMsg
+
+
+    def __str__(self):
+      return repr(self.message)
+
+#Class for handling mask images
+class im:
+    
+    """ Generic class for handling MRI images.  Default class for data to get
+        ROI info from. """
+
+    def __init__(self,im,vb=0,sim_tf=False): #Initialize class
+
+        """ Initialize image object.
+        im   - input image file name
+        vb   - verbosity
+        sim_tf  - simulation mode t or f
+        """
+
+        #Initialize variables
+        self.vb=vb
+        self.im=im
+        self.currIm=im
+        self.tmpIm="/tmp/easyroi_%d_%06d" %(os.getpid(),random.randint(0,10000))
+        self.sim_tf=sim_tf
+        self.label=im
+        self.dims=[]
+        self.imType="image"
+ 
+        self.set_dims() #Set image dimensions
+
+    def set_dims(self): #Set image dimensions
+
+        #Initialize
+        self.dims=[]
+
+        #Get image dimensions the dumb but robust way
+        for i in ("dim1","dim2","dim3","dim4"):
+            self.dims.append( \
+                int(myExec(["fslval "+self.currIm+" "+i],self.vb,self.sim_tf)[1].strip()))
+        
+    def check_input(self): #Make sure inputs exist
+
+        #Initialize
+        self.missingFiles=[]
+        self.missingErrorState=False
+
+        #Check for inputs
+        if os.path.exists(self.im) == False:
+            raise myException("*** easyroi ERROR: Cannot open "+self.im)    
+ 
+    def reg(self,ref,xfm="ident",interp="trilinear",vb=0,sim_tf=False):
+
+        """Extract amygdala from image
+          ref      - reference image (see FLIRT documentation)
+          xfm      - affine transformation matrix text file
+          interp   - interpolation method
+          vb       - turn on extra output (see FLIRT documentation)
+          sim_tf   - run in simulation mode
+        """
+
+
+        #Flesh out identity matrix
+        if xfm == "ident":
+            xfm=os.path.join(os.getenv('FSLDIR'),'etc','flirtsch',
+            'ident.mat')
+
+        #Make sure all files are legit
+        for i in ref,xfm:
+            if os.path.exists(i) == False:
+                raise myException("*** easyroi ERROR: flirt failed, \
+                    Cannot open "+i)
+
+        #Tweak command parameters
+        if self.imType == "mask":
+            interp="nearestneighbour"
+
+        #Construct and run flirt command
+        self.flirtCmd="flirt -in %s -out %s -ref %s -applyxfm -init %s -interp %s" % \
+            (self.currIm,self.tmpIm+"_reg",ref,xfm,interp)
+        print self.flirtCmd
+        myExec([self.flirtCmd],vb,sim_tf)
+        self.currIm=self.tmpIm+"_reg"
+
+        #Reset image dims
+        self.set_dims()
+
+#Class for handling input images, initialized with mask class
+class mask(im):
+    
+    """ Class that initializes and manipulates mask images"""
+
+    def dilate(self,dilCt=1,vb=0,sim_tf=False): #Do any preprocessing
+        
+        #Dupe image for processing
+        self.dupeCmd="imcp %s %s" % (self.im,self.tmpIm)
+        myExec([self.dupeCmd],vb,sim_tf)
+        self.currIm=self.tmpIm
+
+        #Dilate image
+        self.dilCmd="fslmaths %s -dilF %s" % (self.currIm,self.currIm)
+        myExec([self.dilCmd],vb,sim_tf)
+
+
+class anat(im):
+
+    """ Class that initializes and manipulates anat images"""
+
+    def __init__(self,im,vb=0,sim_tf=False): #Initialize class
+
+        """ Initialize mask object.
+        im   - input image file name
+        vb   - verbosity
+        sim_tf  - simulation mode t or f
+        """
+
+        #Initialize variables
+        self.vb=vb
+        self.im=im
+        self.currIm=im
+        self.tmpIm="/tmp/easyroi_%d_%06d" %(os.getpid(),random.randint(0,10000))
+        self.sim_tf=sim_tf
+        self.label=im
+        self.dims=[]
+        self.imType="mask"
+
+    def bet(self,params="",vb=0,sim_tf=False): #Brain extraction
+
+        """ Run brain extraction.
+        params  - Additional parameters to send to bet (see BET documentation)
+        vb      - verbosity
+        sim_tf  - simulation mode t or f
+        """
+
+        #Run BET
+        self.betBrain=self.tmpIm+"_bet"
+        self.betCmd="bet %s %s -m %s" % (self.currIm,self.betBrain,params)
+        myExec([self.betCmd],vb,sim_tf)
+        self.currIm=self.tmpIm+"_bet"
+
+################################################################################
+##################################### MAIN #####################################
+################################################################################
+
+def main():
+
+    #If no input arguments, print header
+    if len(sys.argv) < 2:
+        print_header()
+        sys.exit(0)
+
+    #Initialize variables
+    ims=[]
+    masks=[]
+    anats=[]
+
+    #Add options to parser
+    parser = optparse.OptionParser()
+    parser.add_option("-a", "--anat", dest="inAnats",action="append",
+        help="-a <input_image>: input anatomical image (usually T1)")
+    parser.add_option("-b", "--bet", dest="bet_tf",default=False,
+        action="store_true", help="-b : run brain extraction on input anatomy")
+    parser.add_option("-c", "--coords", dest="inSphereCoords",action="append",
+        help="-c <x,y,z,rad>: create sphere mask at x,y,z,radius(in voxels)")
+    parser.add_option("-d", "--dilate_count", dest="inDilCt",default='0',
+        help="-d <integer>: dilate mask <integer> times")
+    parser.add_option("-f", "--amygdala", dest="amygdala_tf",default=False,
+        action="store_true",help="-f extract bilateral amygdala from anat "\
+            "and use these as ROIs")
+    parser.add_option("-i", "--input_image", dest="inIms",action="append",
+        help="-i <input_image>: image to get ROI statistics on")
+    parser.add_option("-l", "--longhelp", dest="help_tf",default=False,
+        action="store_true", help="-l : print long help (script header)")
+    parser.add_option("-m", "--input_mask", dest="inMasks",action="append",
+        help="-m <input_image>: mask image defining ROI search space")
+    parser.add_option("-r", "--reg_masks", dest="inReg",
+        help="-r <reg.mat>: apply registration to masks. ")
+    parser.add_option("-s", "--simulate", dest="sim_tf",default=False,
+        action="store_true", help="-s : simulation mode (prints shell commands")
+    parser.add_option("-t", "--thresh", dest="inThresh",default=0,
+        help="-t <integer>: apply threshold to image")
+    parser.add_option("-v", "--vb", dest="inVb", default=0,
+        help="verbosity level (0=quiet, default=%default)")
+
+    #Grab info from parser
+    (options, args) = parser.parse_args() 
+    inIms=options.inIms
+    inMasks=options.inMasks
+    inDilCt=int(options.inDilCt)
+    inThresh=int(options.inThresh)
+    inVb=options.inVb
+    bet_tf=options.bet_tf
+    amygdala_tf=options.amygdala_tf
+    sim_tf=options.sim_tf
+    
+    if options.help_tf: #print long help and exit, if requested
+        print_header()
+        sys.exit(0)
+
+    for i in ('fslmaths','3dcalc','3dBrickStat'):# Check all dependencies
+        checkDeps(i)
+   
+    #Create any spheres
+    if options.inSphereCoords:
+
+        #Loop over inputs
+        for i in range(len(options.inSphereCoords)):
+
+            masks.append(mask(sphereMask(options.inSphereCoords[i],1,inIms[0],inVb,sim_tf)))
+
+    if inMasks: #If masks were input...
+        for i in range(len(inMasks)): #... loop over them
+
+            #Create mask object
+            masks.append(mask(inMasks[i],inVb))
+    
+            #Make sure file is openable
+            masks[-1].check_input()
+
+    #Work on input anatomy
+    if options.inAnats:
+
+        for i in range(len(options.inAnats)): #Loop over input images
+
+            #Create anat object
+            anats.append(anat(options.inAnats[i],inVb))
+
+            #Do BET, if selected
+            if bet_tf == True:
+                anats[-1].bet()
+
+            #Extract amygdalae, if selected
+            #NEED to make output be mask objects
+            if amygdala_tf == True:
+                firstseg=first(anats[-1].currIm,"L_Amyg,R_Amyg")
+                (lamy,ramy)=first_amygdala(firstseg)
+                masks.append(mask(lamy))
+                masks.append(mask(ramy))
+
+    #Apply mask-wide operations
+    for i in range(len(masks)):
+
+        if options.inReg: #Register mask, if requested
+            #def reg(self,ref,xfm="ident",interp="trilinear",vb=0,sim_tf=False):
+            print "DUDE"
+            masks[i].reg(inIms[0],options.inReg,"nearestneighbour",inVb,sim_tf)
+
+        if inDilCt > 0: #Dilate mask, if requested
+            masks[i].dilate(inDilCt,inVb,sim_tf)
+
+
+
+    #Loop over image
+    if inIms:
+        for i in range(len(inIms)):
+
+            #Create mask object
+            ims.append(im(inIms[i],inVb))
+
+            #Make sure file is openable
+            ims[i].check_input()
+
+            #Initialize ROI data handle
+            ims[i].roiData=[]
+            ims[i].roiLabels=[]
+
+            #Loop over masks
+            for j in range(len(masks)):
+                #tmpRoiData=list(roi_extract(ims[i],masks[j],inVb,sim_tf))
+                #tmpRoiData.insert(0,masks[j].label)
+                #ims[i].roiData.append(tmpRoiData)
+                tmpRoiData=roi_extract(ims[i],masks[j],inVb,sim_tf)
+                tmpRoiData.insert(0,masks[j].label)
+                ims[i].roiData.append(tmpRoiData)
+
+    #Print ROI info
+    print_roi_results(ims)
+
+    #Clean up temporary images
+    #clean("/tmp/easyroi_"+str(os.getpid()),sim_tf)
+
+#Run main
+if __name__ == '__main__': main()

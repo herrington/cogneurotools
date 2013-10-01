@@ -148,6 +148,5 @@ if [ ${vbse} -gt 0 ]; then
 fi
 
 #Construct and execute command
-mycmd="tkregister2 --mov ${mov} --targ ${targ} --reg ${outFS} --fslreg ${xfm} --
-fslregout ${out} --title ${xfm} ${tkOptions}"
+mycmd="tkregister2 --mov ${mov} --targ ${targ} --reg ${outFS} --fslreg ${xfm} --fslregout ${out} --title ${xfm} ${tkOptions}"
 $smode $mycmd
