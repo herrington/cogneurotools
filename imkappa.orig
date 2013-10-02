@@ -1,0 +1,313 @@
+#!/usr/bin/env python
+
+"""
+<<<<<<< HEAD
+$Id$
+=======
+$Id$
+>>>>>>> 454bd562aa13c1fc57b20812694e57b9bacbb17e
+
+imkappa
+Created by J. Herrington on 8/26/13
+Purpose: To run Kappa reliability on MRI volumes.  At present, only NIFTI
+    image types are supported.  Kappa formula taken from Wakana et al., 2007
+    (doi:10.1016/j.neuroimage.2007.02.049).  Portions of implentation taken
+    from code written by Efstathios Kanterakis and Harini Eavani at the
+    the University of Pennsylvania.
+
+Usage: imkappa <args>
+... where mandatory arguments include
+    -i <input_image>: Input image.  Must be used twice or more.
+
+... and optional arguments include:
+    -l: print long help (this header)
+    -s: dry run/simulation - prints shell commands to screen.
+    -t <integer>: apply intensity threshold <integer> to input images and
+        binary-ize the result (i.e., turn inputs into masks).
+    -v <integer>: set verbosity level.  Default = 0 = quiet.  At present,
+        >=1 is max verbosity.
+
+Dependencies:
+1) FSL must be installed and in path.
+2) AFNI must be installed and in path.
+
+############################### END HEADER ###################################
+Copyright (c) John Herrington, University of Pennsylvania
+    
+This software is distributed WITHOUT ANY WARRANTY; without even
+the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE.  See the above copyright notices for more information.
+
+"""
+################################################################################
+############################### IMPORT MODULES #################################
+################################################################################
+
+import sys,os,math,optparse,random,glob,subprocess,itertools
+from string import *
+    
+################################################################################
+############################# DEFINE FUNCTIONS #################################
+################################################################################
+
+def print_header():
+    """Function for printing the header portion of the script to the screen"""
+
+    #Initialize variables
+    lineCtr=0
+
+    #Read in text file
+    if os.path.exists(sys.argv[0]):
+        myFID = open(sys.argv[0], 'r')
+        for myline in myFID:
+            toprint=myline.replace('#',"",1)
+            endline='END HEADER' in toprint
+            if endline==False:
+                if lineCtr > 2:    print toprint.rstrip("\n")
+            else:
+                myFID.close()
+                break
+            lineCtr=lineCtr+1
+    return 0
+
+#Function for executing shell commands
+def myExec(cmdArray,vb=0,sim=False,quiet=False,noFail=False):
+    """executes a command array by space-concatenating it and passing it to
+    subprocess.Popen. Returns a tuple containing (return value, stdout, stderr)
+    if the exit status is not 0, raises an exception
+      cmdArray - the input command array
+      vb       - turn on extra output
+      sim      - simulate the run (no actual commands run)
+      quiet    - turns off output of stdout and stderr to the screen
+      noFail   - if true does not raise an exception if return value is not 0
+    """
+    MAX_CMD_ARR_LEN = 25 # max number of items to dump
+    
+    if len(cmdArray) > MAX_CMD_ARR_LEN and vb<2:
+        cmd = " ".join(cmdArray[:MAX_CMD_ARR_LEN]) + " ...[" + \
+            str(len(cmdArray)) + "]"
+    else:
+        cmd = " ".join(cmdArray)
+
+    if vb > 0 or sim: # print to screen as needed
+        print cmd
+
+    if sim: #return null values if in simulation mode
+        ret = (0,"Simulated","Simulated")
+    else:
+        output = ["",""]
+        try: #Now execute the command
+            p = subprocess.Popen(cmdArray[0].split(" "), stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE)
+            output = p.communicate()
+            status = p.returncode
+            ret = (status,output[0],output[1])
+        except OSError,e:
+            msg = cmd + "\t*** Caused an OSError\n"
+            msg = msg + "\t"+e.message
+            sys.stderr.write(msg)
+            raise e
+        except Exception,e:
+            sys.stderr.write(e.message)
+            raise e
+      
+    if vb > 0 or sim: #Print return value if requested
+      print "return Value: %d" % ret[0]
+
+    if not quiet and not sim and vb > 0: #pass stderr and stdout along.
+      sys.stdout.write(output[0])
+      sys.stderr.write(output[1])
+    
+    if ret[0] != 0 and not noFail: #if failure then throw an exception
+      msg = cmd + " Failed!"
+      raise myException(msg)
+    
+    return ret
+
+def checkDeps(executable): #function for checking dependencies
+    """checks whether the system can find needed executables"""
+  
+    #print ["which",executable] 
+    if myExec(["which "+executable],quiet=True,noFail=True)[0] != 0:
+      msg = "*** imkappa ERROR: Cannot find dependency " + executable + \
+        ".  Make sure it is installed an in path."
+      raise myException(msg)
+
+#Function for calculating kappa
+def kappa(imA,imB,vb=0,tmpIm='/tmp/imkappa_main_'+str(os.getpid()),sim=False):
+    """ function for running kappa calculation, run on pairs of images.
+        imA   - 1st image
+        imB   - 2nd image
+        vb    - verbosity level
+        tmpIm - base name for temporary images generated for calculation  
+        sim   - run in simulation mode 
+    """
+
+    #Calculate overlap images
+    myExec(["3dcalc -prefix %s_pp.nii.gz -a %s -b %s -expr step(a*b)" % \
+        (tmpIm,imA,imB)],vb)
+    myExec(["3dcalc -prefix %s_pn.nii.gz -a %s -b %s -expr step(a*(1-b))" % \
+        (tmpIm,imA,imB)],vb)
+    myExec(["3dcalc -prefix %s_np.nii.gz -a %s -b %s -expr step((1-a)*b)" % \
+        (tmpIm,imA,imB)],vb)
+    myExec(["3dcalc -prefix %s_nn.nii.gz -a %s -b %s -expr step((1-a)*(1-b))" %\
+        (tmpIm,imA,imB)],vb)
+
+    #Calculating total volume of overlap images
+    pp=float(myExec(["3dBrickStat -count -non-zero "+tmpIm+"_pp.nii.gz"],vb)[1])
+    pn=float(myExec(["3dBrickStat -count -non-zero "+tmpIm+"_pn.nii.gz"],vb)[1])
+    np=float(myExec(["3dBrickStat -count -non-zero "+tmpIm+"_np.nii.gz"],vb)[1])
+    nn=float(myExec(["3dBrickStat -count -non-zero "+tmpIm+"_nn.nii.gz"],vb)[1])
+
+    #Evaluate formulae
+    N=nn+np+pn+pp
+    nn_plus_np=nn+np
+    nn_plus_pn=nn+pn
+    pn_plus_pp=pn+pp
+    np_plus_pp=np+pp
+    Enn=nn_plus_np*nn_plus_pn/N
+    Epp=pn_plus_pp*np_plus_pp/N
+    Obs=(nn+pp)*100/N
+    Exp=(Enn+Epp)*100/N
+    kappa=(Obs-Exp)/(100-Exp)
+
+    #Return kappa
+    return kappa
+
+#Delete temporary files
+def clean(myStr,sim=False):
+    """Deletes all files beginning with myStr - dangerous!"""
+    
+    for i in glob.glob(myStr+"*"): #Do deleting
+        if sim == False:
+            os.remove(i)
+        else:
+            print "rm "+i
+
+################################################################################
+############################### DEFINE CLASSES #################################
+################################################################################
+
+# Error handler
+class myException(Exception):
+    """ Custom error handling class"""
+
+    def __init__(self, inMsg):
+      self.message = inMsg
+
+
+    def __str__(self):
+      return repr(self.message)
+
+#Class for handling individual input images
+class mask:
+    """ Class that initializes and manipulates mask images"""
+
+    def __init__(self,im,vb=0,sim=False): #Initialize class
+
+        """ Initialize mask object.
+        im   - input image file name
+        vb   - verbosity
+        sim  - simulation mode t or f
+        """
+
+        #Initialize variables
+        self.vb=vb
+        self.im=im
+        self.tmpIm="/tmp/imkappa_%07d.nii.gz" % random.randint(0,100000)
+        self.sim=sim
+
+    def check_input(self): #Make sure inputs exist
+
+        #Initialize
+        self.missingFiles=[]
+        self.missingErrorState=False
+
+        #Check for inputs
+        if os.path.exists(self.im) == False:
+            raise myException("*** imkappa ERROR: Cannot open "+self.im)    
+
+    def preproc(self,thresh=0,vb=0,sim=False): #Do any preprocessing
+        
+        #Dupe image for processing
+        self.dupeCmd="/usr/local/fsl-5.0.1/bin/imcp %s %s" % \
+            (self.im,self.tmpIm)
+        myExec([self.dupeCmd],vb,sim)
+
+        #Threshold image as needed
+        if thresh > 0:
+
+            self.threshCmd="fslmaths %s -thr %d -bin %s" % \
+                (self.tmpIm,thresh,self.tmpIm)
+            myExec([self.threshCmd],vb,sim)
+ 
+################################################################################
+##################################### MAIN #####################################
+################################################################################
+
+def main():
+
+    #If no input arguments, print header
+    if len(sys.argv) < 1:
+        print_header()
+        sys.exit(0)
+
+    #Initialize variables
+    ims=[]
+    ks=[]
+    kTot=0
+
+    #Add options to parser
+    parser = optparse.OptionParser()
+    parser.add_option("-l", "--longhelp", dest="help_tf",default=False,
+        action="store_true", help="-l : print long help (script header)")
+    parser.add_option("-i", "--input_image", dest="inIms",action="append",
+        help="-i <input_image>: must be used more than once")
+    parser.add_option("-s", "--simulate", dest="sim_tf",default=False,
+        action="store_true", help="-s : simulation mode (prints shell commands")
+    parser.add_option("-t", "--thresh", dest="inThresh",default=0,
+        help="-t <integer>: apply threshold to image")
+    parser.add_option("-v", "--vb", dest="inVb", default=0,
+        help="verbosity level (0=quiet, default=%default)")
+
+    #Grab info from parser
+    (options, args) = parser.parse_args() 
+    inIms=options.inIms
+    inThresh=int(options.inThresh)
+    inVb=options.inVb
+    sim_tf=options.sim_tf
+
+    if options.help_tf: #print long help and exit, if requestion
+        print_header()
+        sys.exit(0)
+
+    for i in ('fslmaths','3dCalc','3dBrickStat'):# Check all dependencies
+        checkDeps(i)
+
+    for i in range(len(inIms)): #Loop over images
+
+        #Create mask object
+        ims.append(mask(inIms[i],inVb))
+
+        #Make sure file is openable
+        ims[i].check_input()
+
+        #Preprocess image as needed
+        ims[i].preproc(inThresh,inVb,sim_tf)
+
+    #Get a list of all possible permutations of input images
+    perms=list(itertools.combinations(range(len(ims)),2))
+    
+    for i in range(len(perms)): #Run kappa on all permutations
+        ks.append(kappa(ims[perms[i][0]].tmpIm,ims[perms[i][1]].tmpIm))
+        kTot=kTot+ks[i]
+
+    #Generate average kappa and print it
+    kAve=kTot/len(perms)
+    print kAve    
+    
+    #Clean up temporary images
+    clean("/tmp/imkappa")
+
+#Run main
+if __name__ == '__main__': main()
