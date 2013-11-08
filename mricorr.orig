@@ -1,0 +1,231 @@
+#!/usr/bin/env python
+
+<<<<<<< HEAD
+#$Id$#
+=======
+#$Id$#
+>>>>>>> 454bd562aa13c1fc57b20812694e57b9bacbb17e
+#
+#mricorr
+#Created by J. Herrington on 7/15/13
+#Purpose: to run a Pearson correlation between a a matrix of IVs and every voxel
+#   in a 4D NIFTI file (DV).  Script loops over all columns in the input
+#   text file and runs separate correlations on each.  This script was created
+#   primarily because AFNI's correlation program doesn't have all of the outputs
+#   one would like, and using FSL's fsl_glm at the command line is always
+#   very confusion w.r.t. the demeaning of variables (this script handles that).
+#
+#Usage: mricorr <arguments>
+#
+#   ... where the following are mandatory arguments:
+#
+#   -c <correlate text file>: a text file containine one or more columns
+#      of data to be correlationed with the image data.  FILE MUST HAVE
+#      COLUMN HEADERS AND BE COMMA-DELIMITED.
+#
+#   -i <image file name>": the name of a 4D image file
+#      corresponding image-by-image to the correlation text file
+#
+#   ... and optional arguments include:
+#
+#   -o <output_base>: base name for output files.  Default is input 4D MRI
+#      image name with _mricorr appended.
+#
+#   -s": dry run/simulation mode.  Prints commands to screen.
+#
+#   -v <verbose level>: set verbosity of output from 0 (default, no output)
+#      to 2 (fullest verbosity)
+#
+#Outputs: a series of image files with per-voxel correlation statistics
+#    corresponding to each column of the input text file. Outputs are:
+#
+#    <outbase>_r.nii.gz: r-value maps
+#    <outbase>_p.nii.gz: p-value maps
+#    <outbase>_z.nii.gz: z-stat maps
+#
+#Dependencies:
+#   1)Numpy (Numeric Python).  This is a Python library.
+#     You can get Numeric Python (numpy) at http://numpy.scipy.org/
+#     If you're running in linux, numpy is typically part of
+#     various package repositories.  For Red Hat-derived linux
+#     flavors (i.e., Fedora, CentOS), you can generally type
+#     (as root): yum install numpy
+#   2)FSL (the FMRIB Software Library): http://www.fmrib.ox.ac.uk/fsl
+#     FSL must be installed and in your default path.
+#   3)AFNI (the FMRIB Software Library): http://afni.nimh.nih.gov/
+#     AFNI must be installed and in your default path.
+#
+#Example Usage AND Validation:
+#
+###################################
+##   First, create a dummy 4D MRI dataset
+#fslroi /usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz /tmp/mricorr 0 4 0 4 0 4
+#fslmaths /tmp/mricorr -mul 0 -add 1 /tmp/mricorr
+#ctr=1
+##for i in 8.96 0.62 5.86 6.34 5.48 3.23
+#for i in 2 3 4 3 2 1
+#do
+#fslmaths /tmp/mricorr -mul ${i} /tmp/mricorr_`zeropad ${ctr} 2` -odt float
+#let ctr+=1
+#done
+#fslmerge -t mricorr_data /tmp/mricorr_*
+#rm -r /tmp/mricorr*
+#
+##   Second, create a text file representing the design of the kirk analysis.
+##echo -e "iv\n0.91\n1.20\n1.95\n1.49\n0.12\n0.97" > mricorr.txt
+#echo -e "iv\n4\n3\n4\n3\n1\n1" > mricorr.txt
+##   Next, run the example data through mrisppq
+#mricorr -c mricorr.txt -i mricorr_data.nii.gz
+#echo -e "r: `fslstats mricorr_data_mricorr_r.nii.gz -R|awk '{print $1}'`"
+#echo -e "p: `fslstats mricorr_data_mricorr_p.nii.gz -R|awk '{print $1}'`"
+###################################
+################################## END HEADER ##################################
+#Copyright (c) John Herrington, University of Pennsylvania
+#    
+#This software is distributed WITHOUT ANY WARRANTY; without even
+#the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+#PURPOSE.  See the above copyright notices for more information.
+
+################################################################################
+###########################IMPORT NEEDED MODULES################################
+################################################################################
+
+import sys
+try:    import os,math,optparse,csv
+except:
+    print "*** mricorr ERROR: missing one of these three python libraries:"
+    print "*** os, math, or optparse. These are pretty basic libraries-"
+    print "*** check your python installation."
+    sys.exit(0)
+
+try:    from numpy import *
+except:
+    print "*** mricorr ERROR: missing numpy library in python installation."
+    print "*** You can get Numeric Python (numpy) at http://numpy.scipy.org/"
+    print "*** If you're running in linux, numpy is typically part of"
+    print "*** various package repositories.  For Red Hat-derived"
+    print "*** linux flavors (i.e., Fedora, CentOS), you can generally type"
+    print "*** (as root): yum install numpy"
+    sys.exit(0)
+
+try:    from mmtb import *
+except:
+    print "*** mricorr ERROR: could not find mmtb.py in your python path."
+    print "*** Be sure to stick it somewhere in your python path (such as"
+    print "*** in your site-packages folder), or in the same directory"
+    print "*** as this script."
+    sys.exit(0)
+
+################################################################################
+##############################GET USER INPUT####################################
+################################################################################
+
+#First, see if there was any input - print header if not
+if len(sys.argv)==1:
+    print_header("mricorr")
+    sys.exit(0)
+
+#Add options to parser
+parser = OptionParser()
+parser.add_option("-c", "--correlate", dest="myiv",
+                  help="text file to correlate with image data")
+parser.add_option("-i", "--image", dest="mymri", default="infile.nii.gz",
+                  help="input 4D MRI file")
+parser.add_option("-o", "--output", dest="MRout",
+                  help="out 4D MRI file")
+parser.add_option("-s", "--simulate", dest="smode_tf", default=False,
+                  action="store_true", help="run in simulation mode")
+parser.add_option("-v", "--vbse", dest="vbse", default=0,
+                  help="set to echo for echoing")
+
+#Grab info from parser
+(options, args) = parser.parse_args()
+myiv=options.myiv
+mymri=options.mymri
+if options.smode_tf == "True":
+    smode="echo"
+else:
+    smode="eval"
+vbse=int(options.vbse)
+
+##############################################################################
+########################### EXECUTE PROGRAM ##################################
+##############################################################################
+
+#Do further initialization
+Xfilebase="/tmp/mricorr_X_"+str(os.getppid()) #Temp. text file w/X matrix
+Cfilebase="/tmp/mricorr_C_"+str(os.getppid()) #Temp. text file w/contrasts
+MRtmpbase="/tmp/mricorr_"+str(os.getppid())   #Base name for temp. MRIs
+(mymriDir, mymriName) = os.path.split(mymri)      #Split file base and dir
+(mymriBase,mymriExt2)=os.path.splitext(mymriName) #Split file name and ext
+(mymriBase,mymriExt1)=os.path.splitext(mymriBase) #Split ext again(.nii.gz...)
+iv=[]
+
+#Handle output file name
+if options.MRout:
+    MRout=options.MRout
+else:
+    MRout=os.path.join(mymriDir,mymriBase+"_mricorr")#Output file base
+
+
+#Update user
+if vbse > 0:
+    print "******************************************************************"
+    print "******************** RUNNING mricorr ****************************"
+    print "******************************************************************"
+
+#Check dependencies
+deps,fail_list=check_dependencies(str(int(vbse)-1))
+if deps==False:
+    print "******************************************************************"
+    print "*** mricorr ERROR: Failed dependency check"
+    print "*** The following programs could not be located:"
+    print "*** "+str(fail_list)
+    print "*** See the header contents of this file for the list of"
+    print "*** dependencies - make sure all of them are in your default path."
+    sys.exit(0)
+
+#Get image information
+dim4cmd=os.popen('fslval '+mymri+' dim4')
+dim4=dim4cmd.read().rstrip("\n")
+
+#Read design info file
+if vbse > 0:    print "*** Stage 1: Design Matrix Generation"
+inRowCtr=0
+ivF=csv.reader(open(myiv,'r'))
+for row in ivF:
+    if inRowCtr==0:
+        inHdr=row
+    else:
+        iv.append(row)
+    inRowCtr+=1
+
+#Now do some idiot checks.
+#Make sure design info file has same # of rows as MRI 4th dimension
+iv_dims=inRowCtr-1
+if iv_dims != int(dim4):
+    print "*** mricorr ERROR: MRI vols="+dim4+", but IV rows="+str(iv_dims)
+    print "*** fix one or the other!"
+    sys.exit(0)
+
+#Loop over columns in input iv file
+for i in range(len(inHdr)):
+
+    #Write column to new text file
+    outIvF=open(MRtmpbase+inHdr[i]+'.csv','wb')
+    outIv=csv.writer(outIvF)
+    for j in range(len(iv)):
+        outIv.writerow([iv[j][i]])
+
+    outIvF.close()
+    
+    #Run correlation via GLM
+    corrcmd="fsl_glm --demean -i "+mymri+" -d "+MRtmpbase+inHdr[i]+".csv -o "+\
+             MRout+"_"+inHdr[i]+"_r --out_pf="+MRout+"_"+inHdr[i]+"_p --out_z="+\
+             MRout+"_"+inHdr[i]+"_z --dat_norm --des_norm"
+    cmdout=os.system(smode+" "+corrcmd)
+
+#Clean up
+if smode=="eval":
+    cmdout=os.system("rm -rf "+Xfilebase+"* "+Cfilebase+"* "+MRtmpbase+"*")
+
