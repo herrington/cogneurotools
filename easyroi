@@ -178,7 +178,7 @@ def roi_extract(im,mask,vb=0,sim_tf=False):
 
     """Extract ROI information
       im       - image to get ROI information from
-      mask     - mask image defining ROI sapce
+      mask     - mask image defining ROI space
       vb       - turn on extra output
       sim_tf   - run in simulation mode
     """
@@ -190,9 +190,6 @@ def roi_extract(im,mask,vb=0,sim_tf=False):
     roiCOG=["NA"]
     roiSize=["NA"]
     roiOut=[]
-
-    print im.dims[0:2]
-    print mask.dims[0:2]
 
     #Do any needed registration
     if im.dims[0:2] != mask.dims[0:2]:
@@ -222,6 +219,36 @@ def roi_extract(im,mask,vb=0,sim_tf=False):
         roiOut.extend(i)
 
     return roiOut
+
+def afni_extract(im,vb=0,sim_tf=False):
+
+    """Use afni's 3dclust to get roi info
+      im       - image to get ROI information from
+      vb       - turn on extra output
+      sim_tf   - run in simulation mode
+    """
+
+    #Initialize variables
+    out=[]
+    outRaw=[]
+    colCtr=0
+    
+    #Get 3dclustsim output
+    afniCmd="3dclust -quiet -1Dformat -isomerge -nosum 0 0 %s" % im.currIm
+    afniData=[myExec([afniCmd],vb,sim_tf)[1].split()]
+
+    #Reshape output
+    outRaw=zip(*[iter(afniData[0])]*16)
+
+    #Loop over output and reformat
+    out=[]
+    for inRow in outRaw:
+        print inRow
+        out.append([inRow[10],inRow[10],inRow[10],inRow[10],str(float(inRow[1])*-1),
+            inRow[2],inRow[2],inRow[0],inRow[0]])
+
+    #Return output
+    return out
 
 def first(anat,structs=False,params="-m fast",vb=0,sim_tf=False):
 
@@ -577,20 +604,23 @@ def main():
             ims[i].roiData=[]
             ims[i].roiLabels=[]
 
-            #Loop over masks
-            for j in range(len(masks)):
-                #tmpRoiData=list(roi_extract(ims[i],masks[j],inVb,sim_tf))
-                #tmpRoiData.insert(0,masks[j].label)
-                #ims[i].roiData.append(tmpRoiData)
-                tmpRoiData=roi_extract(ims[i],masks[j],inVb,sim_tf)
-                tmpRoiData.insert(0,masks[j].label)
-                ims[i].roiData.append(tmpRoiData)
+            #Loop over masks, if any
+            if len(masks) > 0:
+                for j in range(len(masks)):
+                     tmpRoiData=roi_extract(ims[i],masks[j],inVb,sim_tf)
+                    tmpRoiData.insert(0,masks[j].label)
+                    ims[i].roiData.append(tmpRoiData)
+            else:  #If there are no masks, assume input is mask
+                tmpRois=afni_extract(ims[i],inVb,sim_tf)
+                for tmpRoi in tmpRois:
+                    ims[i].roiData.append(tmpRoi)
+
 
     #Print ROI info
     print_roi_results(ims)
 
     #Clean up temporary images
-    #clean("/tmp/easyroi_"+str(os.getpid()),sim_tf)
+    clean("/tmp/easyroi_"+str(os.getpid()),sim_tf)
 
 #Run main
 if __name__ == '__main__': main()
