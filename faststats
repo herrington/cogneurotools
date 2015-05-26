@@ -1,0 +1,155 @@
+#!/usr/bin/env python
+
+"""
+firststats.py
+Created by J. Herrington on 5/18/15
+Purpose: To provide statistics on volumes from FAST segmentation
+
+Usage: firststats <args>
+... where mandatory arguments include:
+   -i <input_data>: input data (*seg.nii.gz)
+
+... and optional arguments include
+   -n <#,#,#>: integers within image representing csf, gm, wm (default=1,2,3)
+   -v <#> set verbosity level. 0=default=quiet, 1=mildly verbose,>=2=max verbose.
+
+Dependencies: fsl, afni
+
+Last update: 5/26/15
+
+############################### END HEADER ###################################
+Copyright (c) John Herrington, University of Pennsylvania
+    
+This software is distributed WITHOUT ANY WARRANTY; without even
+the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE.  See the above copyright notices for more information.
+"""
+
+##############################################################################
+#########################IMPORT NEEDED MODULES################################
+##############################################################################
+
+import sys,os,optparse,glob,commands
+
+##############################################################################
+############################ DEFINE FUNCTIONS ################################
+##############################################################################
+
+def print_header():
+
+    #Initialize variables
+    lineCtr=0
+
+    #Read in text file
+    if os.path.exists(sys.argv[0]):
+        myFID = open(sys.argv[0], 'r')
+        for myline in myFID:
+            toprint=myline.replace('#',"",1)
+            endline='END HEADER' in toprint
+            if endline==False:
+                if lineCtr > 2:    print toprint.rstrip("\n")
+            else:
+                myFID.close()
+                break
+            lineCtr=lineCtr+1
+
+##############################################################################
+############################### DEFINE CLASSES ###############################
+##############################################################################
+
+class map:
+
+    def __init__(self,inFile,vbse=0):
+
+        #Initialize variables
+        self.vbse=vbse
+        self.fileName=inFile
+        self.dims=[]
+        self.segVols=[]
+        
+        #Make sure file exists
+        if os.path.exists(self.fileName) == False:
+            raise Exception('*** firststats ERROR: cannot open '+self.fileName)
+
+    #Read in data
+    def getDims(self):
+
+        #Loop over image dimensions
+        for i in (1,2,3):
+            for j in ('dim','pixdim'):
+                
+                #Initialize command
+                myCmd="fslval %s %s|tr -d [:cntrl:]|tr -d ' '" % (self.fileName,j+str(i))
+                    
+                #Run command
+                try:
+                    if self.vbse > 1:    print myCmd
+                    myOut=float(commands.getoutput(myCmd))
+                    self.dims.append(myOut)
+
+                except:
+                    print "*** acqcheck ERROR: convert command returned"
+                    print myOut
+
+        if self.vbse > 1:
+            print "*** firststats %s dims: %s" % (self.fileName,str(self.dims))
+
+    def getSize(self,inVals=[1.0,2.0,3.0]):
+
+        #Loop over values
+        for i in inVals:
+
+            #Create command to get volume
+            myCmd="3dmaskave -mask %s -mrange %1.1f %1.1f %s 2> /dev/null 3>/dev/null|sed 's/.*\[//g;s/].*//g;s/ .*//g'" % \
+            (self.fileName,i-.1,i+.1,self.fileName)
+
+            #Run command
+            try:
+                if self.vbse > 1:    print myCmd
+                self.segVols.append(commands.getoutput(myCmd))
+            except:
+                print "*** acqcheck ERROR: convert command returned"
+                print myOut
+                sys.exit()
+
+############################## RUN SCRIPT ################################
+##########################################################################
+
+def main():
+
+    #If no input arguments, print header
+    if len(sys.argv) < 1:
+        print_header()
+        sys.exit(0)
+
+    #Add options to parser
+    parser = optparse.OptionParser()
+    parser.add_option("-i", "--input", dest="inFileName",
+        default=False,help="-i <input_image>: input image")
+    parser.add_option("-n", "--input_seg_numbers", dest="inNums",
+        default="1,2,3",help="-n <#,#>: comma-separated list of L,R amygdala vals")
+    parser.add_option("-v", "--vbse", dest="vbse", default=0,
+        help="verbosity level (0=quiet, default=%default)")
+
+    #Grab info from parser
+    (opts, args) = parser.parse_args()
+    vbse=int(opts.vbse)
+    segVals=[float(i) for i in opts.inNums.split(',')]
+
+    #If there's a stat map, initialize it
+    if not opts.inFileName == False:
+        myMap=map(opts.inFileName,vbse)
+    else:
+        print "*** firststats ERROR: need input map"
+        print_header()
+        sys.exit()
+
+    #Get sizes
+    myMap.getSize(segVals)
+    
+    #print output
+    print "input,csf_voxels,gm_voxels,wm_voxels"
+    print "%s,%s" % (myMap.fileName,",".join(myMap.segVols))
+
+#Run main
+if __name__ == '__main__': main()
